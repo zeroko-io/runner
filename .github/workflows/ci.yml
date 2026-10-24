@@ -1,0 +1,259 @@
+name: ci
+
+# One build per commit. A push to main (or a pull request) runs the tests,
+# builds the image, tests it, and on main publishes it as sha-<commit> and,
+# while that commit is main's newest, dev. A vX.Y.Z tag builds nothing: once
+# main's run of that commit has passed, it names that same image X.Y.Z, X.Y,
+# X (from 1.0) and latest, and makes the GitHub release from CHANGELOG.md.
+#
+# The version is git's: `git describe` of the vX.Y.Z tags, so a release
+# pushes its commit and its tag together (git push --atomic origin main
+# vX.Y.Z), and the image built for that commit is X.Y.Z.
+#
+# Changes to the README or the changelog only run nothing. Path filters do
+# not apply to tags.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths: &code
+      - "**"
+      - "!**.md"
+      - "!LICENSE"
+      - "!docker-compose.yml"
+  pull_request:
+    paths: *code
+  # By hand, on main: the same run as a push, when a push did not start one.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A pull request's newer push cancels its older run. Every commit of main
+# runs to the end, so that a tag can always name its image; a tag waits for
+# that run instead of building again.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || format('{0}-{1}', github.ref_type, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./... && go vet -tags e2e ./test/...
+      - run: go test ./...
+
+  # Both images are cross-compiled here; the amd64 one runs the end-to-end
+  # tests here, and the arm64 one on an arm64 machine (e2e-arm64), the same
+  # image, handed over as an artifact.
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the tags, for the version
+      - uses: docker/setup-buildx-action@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # 0.1.0 on a tagged commit, 0.1.0-3-gabc1234 three commits after it.
+      - id: meta
+        run: |
+          v=$(git describe --tags --match 'v[0-9]*' --always)
+          echo "version=${v#v}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - name: Build for amd64
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: runner:amd64
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          labels: org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: End-to-end tests
+        run: |
+          docker run -d --name amd64 -p 8080:8080 -p 8081:8081 \
+            -e ZEROKO_TOKEN=e2e-root-token-0123456789abcdef0123456789 runner:amd64
+          for _ in $(seq 60); do curl -sf http://127.0.0.1:8081/healthz >/dev/null && break; sleep 1; done
+          go test -tags e2e -count=1 -timeout 15m -v ./test/e2e -run TestE2E
+          docker rm -f amd64
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+      - name: Build for arm64
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          tags: runner:arm64
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          labels: org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Hand the arm64 image over
+        run: docker save runner:arm64 | gzip -1 > runner-arm64.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: runner-arm64
+          path: runner-arm64.tar.gz
+          retention-days: 1
+      - if: failure()
+        name: Logs of a failed test
+        run: docker logs amd64 2>/dev/null | tail -200 || true
+
+  # The whole end-to-end suite on arm64, natively, on the image built above.
+  e2e-arm64:
+    needs: image
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v8
+        with:
+          name: runner-arm64
+      - name: End-to-end tests
+        run: |
+          gunzip -c runner-arm64.tar.gz | docker load
+          docker run -d --name arm64 -p 8080:8080 -p 8081:8081 \
+            -e ZEROKO_TOKEN=e2e-root-token-0123456789abcdef0123456789 runner:arm64
+          for _ in $(seq 60); do curl -sf http://127.0.0.1:8081/healthz >/dev/null && break; sleep 1; done
+          go test -tags e2e -count=1 -timeout 15m -v ./test/e2e -run TestE2E
+      - if: failure()
+        name: Logs of a failed test
+        run: docker logs arm64 2>/dev/null | tail -200 || true
+
+  # On main, once both platforms passed: the same layers as the images
+  # tested, from the cache, as sha-<commit> and, while that commit is main's
+  # newest, dev.
+  publish:
+    needs: [image, e2e-arm64]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+      - id: meta
+        run: |
+          v=$(git describe --tags --match 'v[0-9]*' --always)
+          echo "version=${v#v}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # dev moves only forward: a run that ends after a newer commit reached
+      # main publishes its sha-<commit> alone.
+      - id: tags
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "${{ steps.meta.outputs.image }}:sha-$GITHUB_SHA"
+            if [ "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA" ]; then
+              echo "${{ steps.meta.outputs.image }}:dev"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Publish
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          labels: org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+
+  release:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # Everything that can be wrong with the tag fails here, before waiting.
+      - name: Check the tag
+        id: check
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$GITHUB_REF_NAME is not vX.Y.Z"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
+          awk -v h="## $v" '$0 == h {on = 1; next} /^## / {on = 0} on' CHANGELOG.md > notes.md
+          grep -q . notes.md || { echo "::error::CHANGELOG.md has no ## $v"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Wait for main's run of this commit
+        run: |
+          for i in $(seq 120); do
+            run=$(gh run list --workflow ci --branch main --commit "$GITHUB_SHA" --limit 1 --json status,conclusion,url)
+            status=$(jq -r '.[0].status // "none"' <<<"$run")
+            conclusion=$(jq -r '.[0].conclusion // ""' <<<"$run")
+            if [ "$status" = completed ]; then
+              [ "$conclusion" = success ] && exit 0
+              echo "::error::main's run of this commit ended in $conclusion: $(jq -r '.[0].url' <<<"$run")"
+              exit 1
+            fi
+            [ "$status" = none ] && [ "$i" -ge 6 ] && { echo "::error::main has no run of this commit (docs only?)"; exit 1; }
+            sleep 30
+          done
+          echo "::error::main's run of this commit did not end in an hour"
+          exit 1
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Name the tested image
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          v="${{ steps.check.outputs.version }}"
+          built=$(docker buildx imagetools inspect "$image:sha-$GITHUB_SHA" --format '{{json .Image}}' \
+            | jq -r '.["linux/amd64"].config.Labels["org.opencontainers.image.version"]')
+          [ "$built" = "$v" ] || { echo "::error::this commit's image is $built, not $v: push the tag with its commit (git push --atomic origin main $GITHUB_REF_NAME)"; exit 1; }
+          tags=(-t "$image:$v" -t "$image:${v%.*}" -t "$image:latest")
+          [[ "$v" == 0.* ]] || tags+=(-t "$image:${v%%.*}")
+          docker buildx imagetools create "${tags[@]}" "$image:sha-$GITHUB_SHA"
+          docker buildx imagetools inspect "$image:$v"
+      - name: GitHub release
+        run: |
+          v="${{ steps.check.outputs.version }}"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "Zeroko $v" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Zeroko $v" --notes-file notes.md
+          fi

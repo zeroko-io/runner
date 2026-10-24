@@ -1,0 +1,13 @@
+services:
+  runner:
+    image: ghcr.io/zeroko-io/runner
+    restart: unless-stopped
+    ports:
+      - "8080:8080" # services: put the HTTPS proxy in front
+      - "127.0.0.1:8081:8081" # the API: for the app that manages the runner
+    environment:
+      ZEROKO_TOKEN: change-me # the root API token: openssl rand -hex 32
+    volumes:
+      - data:/data
+volumes:
+  data:
