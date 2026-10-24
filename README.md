@@ -33,7 +33,7 @@ Point `*.zeroko.example.com` at an HTTPS proxy in front of port 8080. Port
 
 ## Learn more
 
-The docs are at [zeroko.io/docs](https://zeroko.io/docs): self-hosting,
+The docs are at [zeroko.space/docs](https://zeroko.space/docs): self-hosting,
 the runner's settings and limits, its API, security and architecture. What
 changed is in the [changelog](CHANGELOG.md).
 
