@@ -40,6 +40,36 @@ func (p *Platform) CreateService(ctx context.Context, name string) (*store.Servi
 	return p.Store.CreateService(ctx, name)
 }
 
+// RenameService gives a service a new name, its address: it answers at
+// the new host at once, and no longer at the old one. Its data, versions
+// and logs are its own, by its id, and stay. Services that call it through
+// a service:<name> binding need deploying with the new name.
+func (p *Platform) RenameService(ctx context.Context, service *store.Service, name string) error {
+	if name == service.Name {
+		return nil
+	}
+	if !deploy.ServiceName.MatchString(name) {
+		return Invalid("service names are 1 to 40 lowercase letters, digits and hyphens, starting and ending with a letter or digit")
+	}
+	// Both names, always in the same order: no deploy to either meanwhile.
+	first, second := service.Name, name
+	if second < first {
+		first, second = second, first
+	}
+	defer p.lock(first)()
+	defer p.lock(second)()
+	if _, err := p.Store.Service(ctx, name); err == nil {
+		return Invalid("a service named " + name + " exists")
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	if err := p.Store.RenameService(ctx, service.ID, name); err != nil {
+		return err
+	}
+	service.Name = name
+	return nil
+}
+
 // Source is the code of a deployment: each file's text, or null for binary
 // files.
 type Source struct {

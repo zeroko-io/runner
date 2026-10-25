@@ -34,7 +34,7 @@ func (s *Server) apiRoutes() http.Handler {
 	a("GET /api/services", s.listServices)
 	a("POST /api/services", s.createService)
 	service("GET /api/services/{service}", s.getService)
-	service("PATCH /api/services/{service}", s.setLimits)
+	service("PATCH /api/services/{service}", s.patchService)
 	service("DELETE /api/services/{service}", s.deleteService)
 	service("POST /api/services/{service}/stop", func(w http.ResponseWriter, r *http.Request, service *store.Service) {
 		s.setStopped(w, r, service, true)

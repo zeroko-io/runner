@@ -162,14 +162,21 @@ func (s *Server) systemLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.p.Lines.After(after, 1000))
 }
 
-// setLimits changes what a service may reach and store.
-func (s *Server) setLimits(w http.ResponseWriter, r *http.Request, service *store.Service) {
+// patchService renames a service, and changes what it may reach and store.
+func (s *Server) patchService(w http.ResponseWriter, r *http.Request, service *store.Service) {
 	var in struct {
+		Name   *string   `json:"name"`
 		Egress *[]string `json:"egress"`
 		DiskMB *int      `json:"disk_mb"`
 	}
 	if !decodeBody(w, r, 64<<10, &in) {
 		return
+	}
+	if in.Name != nil {
+		if err := s.p.RenameService(r.Context(), service, strings.ToLower(strings.TrimSpace(*in.Name))); err != nil {
+			s.fail(w, err)
+			return
+		}
 	}
 	egress, diskMB := service.Egress, service.DiskMB
 	if in.Egress != nil {

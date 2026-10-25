@@ -51,6 +51,12 @@ func (s *Store) SetServiceLimits(ctx context.Context, id string, egress []string
 	return err
 }
 
+// RenameService gives a service a new name.
+func (s *Store) RenameService(ctx context.Context, id, name string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE services SET name = ? WHERE id = ?`, name, id)
+	return err
+}
+
 func (s *Store) CreateService(ctx context.Context, name string) (*Service, error) {
 	a := &Service{ID: NewID(), Name: name, CreatedAt: now(), Egress: []string{"*"}}
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO services (id, name, created_at) VALUES (?, ?, ?)`, a.ID, a.Name, a.CreatedAt)

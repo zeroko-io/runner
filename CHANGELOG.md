@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `PATCH /api/services/<name>` takes `name` too: it renames the service,
+  its address. Its data, versions and logs stay; it answers at the new
+  host at once, and no longer at the old one. Services that call it
+  through a `service:<name>` binding need deploying with the new name.
+
 ## 0.1.0
 
 The first version of the runner.

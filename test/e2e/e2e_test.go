@@ -363,6 +363,12 @@ func TestE2E(t *testing.T) {
 	// A second service keeps working while the first spins.
 	r = s.api("POST", "/api/services/t2/deployments", map[string]any{"files": map[string]string{"index.js": "export default { fetch() { return new Response('t2') } }"}})
 	s.check("deploy a second service", r.status == 201, r.text())
+	r = s.api("PATCH", "/api/services/t2", map[string]any{"name": "t2-renamed"})
+	s.check("rename a service", r.status == 200 && r.obj()["name"] == "t2-renamed", r.text())
+	s.check("a renamed service answers at its new host", gw("t2-renamed", "GET", "/", nil, nil).text() == "t2")
+	s.check("and no longer at its old one", gw("t2", "GET", "/", nil, nil).status == 404)
+	s.check("a service can't take another's name", s.api("PATCH", "/api/services/t2-renamed", map[string]any{"name": "t1"}).status == 400)
+	s.check("rename it back", s.api("PATCH", "/api/services/t2-renamed", map[string]any{"name": "t2"}).status == 200 && gw("t2", "GET", "/", nil, nil).text() == "t2")
 	spun := make(chan int, 1)
 	go func() { spun <- t1("/spin").status }()
 	time.Sleep(500 * time.Millisecond)
