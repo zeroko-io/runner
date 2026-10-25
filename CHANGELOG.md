@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - A client, for rate limits, is the last of `X-Forwarded-For` only when
   the request comes from a private or loopback address (a proxy in front);
