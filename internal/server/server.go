@@ -23,12 +23,13 @@ type Server struct {
 
 	api     http.Handler
 	control http.Handler
+	limits  *limiter // services' rates, per client
 }
 
 // New makes the runner's handlers; rootToken is the token of the app that
 // manages the runner.
 func New(p *platform.Platform, rootToken string, log *slog.Logger) *Server {
-	s := &Server{p: p, log: log, root: sha256.Sum256([]byte(rootToken))}
+	s := &Server{p: p, log: log, root: sha256.Sum256([]byte(rootToken)), limits: newLimiter()}
 	s.api = s.apiRoutes()
 	s.control = s.controlRoutes()
 	return s

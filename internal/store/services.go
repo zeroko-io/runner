@@ -15,6 +15,9 @@ type Service struct {
 	Stopped          bool     `json:"stopped"`
 	Egress           []string `json:"egress"`  // hosts the service may reach; "*" is any
 	DiskMB           int      `json:"disk_mb"` // its disk quota; 0: the instance's default
+	// Requests a second per client: 0 for the runner's rate_limit, -1 for
+	// none.
+	RateLimit int `json:"rate_limit"`
 }
 
 type Deployment struct {
@@ -28,12 +31,12 @@ type Deployment struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
-const serviceCols = `id, name, created_at, coalesce(active_deployment, ''), stopped, egress, disk_mb`
+const serviceCols = `id, name, created_at, coalesce(active_deployment, ''), stopped, egress, disk_mb, rate_limit`
 
 func scanService(row interface{ Scan(...any) error }) (*Service, error) {
 	var sv Service
 	var egress string
-	err := row.Scan(&sv.ID, &sv.Name, &sv.CreatedAt, &sv.ActiveDeployment, &sv.Stopped, &egress, &sv.DiskMB)
+	err := row.Scan(&sv.ID, &sv.Name, &sv.CreatedAt, &sv.ActiveDeployment, &sv.Stopped, &egress, &sv.DiskMB, &sv.RateLimit)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -45,9 +48,9 @@ func scanService(row interface{ Scan(...any) error }) (*Service, error) {
 }
 
 // SetServiceLimits sets what a service may reach and store.
-func (s *Store) SetServiceLimits(ctx context.Context, id string, egress []string, diskMB int) error {
+func (s *Store) SetServiceLimits(ctx context.Context, id string, egress []string, diskMB, rateLimit int) error {
 	b, _ := json.Marshal(egress)
-	_, err := s.DB.ExecContext(ctx, `UPDATE services SET egress = ?, disk_mb = ? WHERE id = ?`, string(b), diskMB, id)
+	_, err := s.DB.ExecContext(ctx, `UPDATE services SET egress = ?, disk_mb = ?, rate_limit = ? WHERE id = ?`, string(b), diskMB, rateLimit, id)
 	return err
 }
 

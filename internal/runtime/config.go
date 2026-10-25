@@ -38,8 +38,17 @@ func writeConfig(dir string, spec *Spec, token string, opt *Options) error {
 		return err
 	}
 	main, _ := json.Marshal("./" + spec.Manifest.Main)
+	services := []string{}
+	for _, name := range sortedKeys(spec.Manifest.Bindings) {
+		if strings.HasPrefix(spec.Manifest.Bindings[name], deploy.ServicePrefix) {
+			services = append(services, name)
+		}
+	}
+	names, _ := json.Marshal(services)
+	entry := strings.Replace(mainJS, `"__ZEROKO_MAIN__"`, string(main), 1)
+	entry = strings.Replace(entry, `"__ZEROKO_SERVICES__"`, string(names), 1)
 	files := map[string]string{
-		"main.js":     strings.Replace(mainJS, `"__ZEROKO_MAIN__"`, string(main), 1),
+		"main.js":     entry,
 		"bindings.js": bindingsJS,
 	}
 	for name, content := range files {
@@ -89,7 +98,7 @@ func writeConfig(dir string, spec *Spec, token string, opt *Options) error {
 	// Requests in proxy form, with the absolute URL; Go's server wants a Host
 	// header besides, which it ignores for those.
 	fmt.Fprintf(&b, "    (name = \"egress\", external = (address = %s, http = (style = proxy, injectRequestHeaders = [(name = \"x-zeroko-token\", value = %s), (name = \"host\", value = \"egress\")]))),\n",
-		quote("unix:"+opt.EgressSock), quote(token))
+		quote("unix:"+filepath.Join(dir, "egress.sock")), quote(token))
 	b.WriteString("  ],\n  sockets = [\n")
 	fmt.Fprintf(&b, "    (name = \"public\", address = %s, http = (style = host, forwardedProtoHeader = \"x-forwarded-proto\"), service = \"main\"),\n",
 		quote("unix:"+filepath.Join(dir, "public.sock")))

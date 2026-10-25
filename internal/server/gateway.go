@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,19 @@ func (s *Server) serveService(w http.ResponseWriter, r *http.Request, name strin
 			s.p.Request(service.ID, deployment, r.Method, r.URL.Path, status, time.Since(start))
 		}
 	}()
+	caller, fromService := ctx.Value(callerKey{}).(string)
+	// Each client at its rate: the service's own, or the runner's. Calls
+	// from other services aren't counted.
+	rate := service.RateLimit
+	if rate == 0 {
+		rate = s.p.Cfg.RateLimit
+	}
+	if rate > 0 && !fromService && !s.limits.allow(service.ID+" "+client(r), rate) {
+		status = http.StatusTooManyRequests
+		w.Header().Set("Retry-After", "1")
+		writeError(w, status, "rate_limited", "Too many requests: slow down and try again.")
+		return
+	}
 	proc, err := s.p.RT.Get(ctx, service.ID)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -83,8 +97,9 @@ func (s *Server) serveService(w http.ResponseWriter, r *http.Request, name strin
 			out.Header.Del(k)
 		}
 	}
-	if caller, ok := ctx.Value(callerKey{}).(string); ok {
+	if fromService {
 		out.Header.Set("X-Zeroko-From", caller) // from another service, through a binding
+		out.Header.Set("X-Zeroko-Hops", strconv.Itoa(ctx.Value(hopsKey{}).(int)))
 	} else if prior := r.Header.Get("X-Forwarded-For"); prior != "" {
 		out.Header.Set("X-Forwarded-For", prior+", "+clientIP(r))
 	} else {
@@ -119,6 +134,11 @@ func (s *Server) serveService(w http.ResponseWriter, r *http.Request, name strin
 		if !ok {
 			status = http.StatusBadGateway
 			writeError(w, status, "invalid_subscription", "The service's subscription is invalid.")
+			return
+		}
+		if s.p.Hub.Connections(service.ID) >= s.p.Cfg.RealtimeConnections {
+			status = http.StatusServiceUnavailable
+			writeError(w, status, "too_many_connections", "The service holds as many realtime connections as it may.")
 			return
 		}
 		done() // a realtime connection does not keep the process busy

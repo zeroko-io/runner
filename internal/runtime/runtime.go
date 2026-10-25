@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/zeroko-io/runner/internal/deploy"
+	"github.com/zeroko-io/runner/internal/egress"
 	"github.com/zeroko-io/runner/internal/store"
 )
 
@@ -44,11 +45,16 @@ type Options struct {
 	WorkerdBin  string
 	Dir         string // processes' directories and sockets
 	ControlSock string
-	EgressSock  string
-	HeapMB      int
-	CPUSeconds  int
-	IdleSeconds int
-	MaxProcs    int
+	// Egress serves each process's outbound requests and sockets, on a
+	// socket of the process's own: it knows the process by it.
+	Egress     http.Handler
+	HeapMB     int
+	CPUSeconds int
+	// CPUPerMinute is the CPU, in seconds, a process may use in any minute:
+	// past it, it waits. 0 for no limit.
+	CPUPerMinute int
+	IdleSeconds  int
+	MaxProcs     int
 	// Load builds the spec of a service's active version.
 	Load func(ctx context.Context, serviceID string) (*Spec, error)
 	// Logs receives each process's log entries.
@@ -170,6 +176,22 @@ func (r *Runtime) Start(spec *Spec) (*Proc, error) {
 	if err := writeConfig(p.dir, spec, p.token, &r.opt); err != nil {
 		return nil, err
 	}
+	// The process's way out. workerd adds the process's token to the
+	// requests it proxies, but not to the CONNECT of a socket: the socket
+	// says whose it is.
+	ln, err := net.Listen("unix", filepath.Join(p.dir, "egress.sock"))
+	if err != nil {
+		os.RemoveAll(p.dir)
+		return nil, err
+	}
+	p.egress = &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			req.Header.Set(egress.TokenHeader, p.token)
+			r.opt.Egress.ServeHTTP(w, req)
+		}),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go p.egress.Serve(ln)
 	p.public = unixClient(filepath.Join(p.dir, "public.sock"))
 	p.internal = unixClient(filepath.Join(p.dir, "internal.sock"))
 
@@ -441,6 +463,10 @@ func (r *Runtime) watch() {
 			if busy := p.sampleCPU(); busy >= r.opt.CPUSeconds {
 				p.killReason.Store(fmt.Sprintf("v%d kept the CPU busy for %d seconds and was restarted; requests in flight failed", p.Version, busy))
 				p.kill()
+				continue
+			}
+			if r.opt.CPUPerMinute > 0 {
+				p.throttle(uint64(r.opt.CPUPerMinute) * clockTicks)
 			}
 		}
 	}
@@ -460,6 +486,7 @@ type Proc struct {
 	cmd      *exec.Cmd
 	public   *http.Client
 	internal *http.Client
+	egress   *http.Server // its outbound requests, on egress.sock
 	started  time.Time
 
 	inflight   atomic.Int64
@@ -475,6 +502,9 @@ type Proc struct {
 	cpuTicks   uint64
 	cpuBusySec int
 	cpuPercent atomic.Int64 // of one core, over the last second
+	cpuMinute  [60]uint64   // clock ticks used in each of the last 60 seconds
+	cpuSlot    int
+	paused     atomic.Bool // stopped by throttle, until its minute fits
 
 	mu        sync.Mutex
 	startLogs []string
@@ -574,6 +604,7 @@ func (p *Proc) stop(reason string) {
 		p.cleanup()
 		return
 	}
+	p.resume()
 	p.cmd.Process.Signal(syscall.SIGTERM)
 	select {
 	case <-p.exited:
@@ -591,11 +622,15 @@ func (p *Proc) Shutdown() {
 
 func (p *Proc) kill() {
 	if p.cmd != nil && p.cmd.Process != nil {
+		p.resume()
 		p.cmd.Process.Kill()
 	}
 }
 
 func (p *Proc) cleanup() {
+	if p.egress != nil {
+		p.egress.Close()
+	}
 	p.public.CloseIdleConnections()
 	p.internal.CloseIdleConnections()
 	os.RemoveAll(p.dir)

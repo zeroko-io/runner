@@ -91,6 +91,11 @@ jobs:
           for _ in $(seq 60); do curl -sf http://127.0.0.1:8081/healthz >/dev/null && break; sleep 1; done
           go test -tags e2e -count=1 -timeout 15m -v ./test/e2e -run TestE2E
           docker rm -f amd64
+      - name: Upgrade from the last release
+        run: |
+          docker pull ghcr.io/zeroko-io/runner:latest
+          RUNNER_OLD_IMAGE=ghcr.io/zeroko-io/runner:latest RUNNER_NEW_IMAGE=runner:amd64 \
+            go test -tags e2e -count=1 -timeout 10m -v ./test/e2e -run TestUpgrade
       - uses: docker/setup-qemu-action@v4
         with:
           platforms: arm64

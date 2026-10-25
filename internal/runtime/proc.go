@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strconv"
 	"syscall"
@@ -40,6 +41,8 @@ func (p *Proc) sampleCPU() int {
 	ticks := ut + st
 	if p.cpuTicks != 0 {
 		p.cpuPercent.Store(int64((ticks - p.cpuTicks) * 100 / clockTicks))
+		p.cpuMinute[p.cpuSlot%len(p.cpuMinute)] = ticks - p.cpuTicks
+		p.cpuSlot++
 	}
 	if p.cpuTicks != 0 && ticks-p.cpuTicks >= clockTicks*9/10 {
 		p.cpuBusySec++
@@ -89,4 +92,41 @@ func (p *Proc) statusKB(field string) int64 {
 		}
 	}
 	return 0
+}
+
+// cpuLastMinute is the CPU the process used over the last minute, in clock
+// ticks, as sampleCPU saw it.
+func (p *Proc) cpuLastMinute() uint64 {
+	var n uint64
+	for _, t := range p.cpuMinute {
+		n += t
+	}
+	return n
+}
+
+// throttle holds the process to budget clock ticks of CPU a minute: past
+// it, the process and its threads are paused (SIGSTOP to its process
+// group), and go on once the last minute fits again. Requests wait, they
+// don't fail. Called once a second, after sampleCPU.
+func (p *Proc) throttle(budget uint64) {
+	if p.cmd == nil || p.cmd.Process == nil {
+		return
+	}
+	used := p.cpuLastMinute()
+	switch {
+	case !p.paused.Load() && used > budget:
+		if syscall.Kill(-p.cmd.Process.Pid, syscall.SIGSTOP) == nil {
+			p.paused.Store(true)
+			p.note("warn", fmt.Sprintf("v%d used %ds of CPU in the last minute, more than the %ds it may: it waits until the minute fits", p.Version, used/clockTicks, budget/clockTicks))
+		}
+	case p.paused.Load() && used <= budget:
+		p.resume()
+	}
+}
+
+// resume lets a paused process go on.
+func (p *Proc) resume() {
+	if p.paused.CompareAndSwap(true, false) && p.cmd != nil && p.cmd.Process != nil {
+		syscall.Kill(-p.cmd.Process.Pid, syscall.SIGCONT)
+	}
 }

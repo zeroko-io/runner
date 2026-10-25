@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Outbound sockets from `connect()` work: each service process has an
+  egress socket of its own, which says whose its requests are (workerd
+  doesn't add the process's token to a socket's CONNECT). Plain TCP only:
+  TLS on a socket isn't proxied yet; HTTPS goes through `fetch`.
+- `cpu_seconds_per_minute` (30 by default): the CPU a service process may
+  use in any minute; past it, the process is paused (SIGSTOP) until the
+  minute fits, and says so in its logs. Its requests wait, they don't fail.
+- `realtime_connections` (1000 by default): the realtime connections a
+  service holds at once; past it, a new one answers 503.
+- `rate_limit` (none by default), and a service's own (`PATCH
+  /api/services/<name>` `{"rate_limit": n}`: 0 for the runner's, -1 for
+  none): requests a second per client, by address, with bursts of twice
+  as many; past it, 429 with `Retry-After`. Calls from other services
+  aren't counted. A migration adds it to every service.
+- Services calling each other in a cycle are stopped: a request goes
+  through up to 16 service bindings in a row (`X-Zeroko-Hops`, carried for
+  each request by the service's entry module); past it, the call answers
+  508.
+- Tests: outbound sockets and WebSockets through the egress proxy, and an
+  upgrade from the last release on the same volume (in CI).
+
 - The API as an MCP server (the Model Context Protocol), at `POST /mcp`
   with the same tokens: tools to list, deploy, inspect, roll back, stop,
   start and delete services, read their logs and metrics, set secrets and

@@ -162,12 +162,14 @@ func (s *Server) systemLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.p.Lines.After(after, 1000))
 }
 
-// patchService renames a service, and changes what it may reach and store.
+// patchService renames a service, and changes what it may reach and store
+// and how fast each client may call it.
 func (s *Server) patchService(w http.ResponseWriter, r *http.Request, service *store.Service) {
 	var in struct {
-		Name   *string   `json:"name"`
-		Egress *[]string `json:"egress"`
-		DiskMB *int      `json:"disk_mb"`
+		Name      *string   `json:"name"`
+		Egress    *[]string `json:"egress"`
+		DiskMB    *int      `json:"disk_mb"`
+		RateLimit *int      `json:"rate_limit"`
 	}
 	if !decodeBody(w, r, 64<<10, &in) {
 		return
@@ -178,14 +180,17 @@ func (s *Server) patchService(w http.ResponseWriter, r *http.Request, service *s
 			return
 		}
 	}
-	egress, diskMB := service.Egress, service.DiskMB
+	egress, diskMB, rateLimit := service.Egress, service.DiskMB, service.RateLimit
 	if in.Egress != nil {
 		egress = *in.Egress
 	}
 	if in.DiskMB != nil {
 		diskMB = *in.DiskMB
 	}
-	if err := s.p.SetLimits(r.Context(), service, egress, diskMB); err != nil {
+	if in.RateLimit != nil {
+		rateLimit = *in.RateLimit
+	}
+	if err := s.p.SetLimits(r.Context(), service, egress, diskMB, rateLimit); err != nil {
 		s.fail(w, err)
 		return
 	}

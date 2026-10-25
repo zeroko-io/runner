@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"slices"
@@ -21,6 +22,9 @@ type procKey struct{}
 // callerKey holds the name of the service a request through a service
 // binding comes from.
 type callerKey struct{}
+
+// hopsKey is how many service bindings a call went through.
+type hopsKey struct{}
 
 // controlRoutes serve the bindings inside service processes. The process token
 // identifies the service; the binding name comes from the process's config, so
@@ -100,6 +104,16 @@ func (s *Server) ctlCall(w http.ResponseWriter, r *http.Request) {
 		s.ctlFail(w, err)
 		return
 	}
+	// How many bindings the request went through to get here, as the
+	// caller's main.js passes it on: past maxHops, the services are calling
+	// each other in a cycle.
+	hops, _ := strconv.Atoi(r.Header.Get("X-Zeroko-Hops"))
+	hops++
+	if hops > maxHops {
+		ctlError(w, http.StatusLoopDetected, fmt.Sprintf("%d calls from service to service: the services call each other in a cycle", hops))
+		return
+	}
+	ctx = context.WithValue(ctx, hopsKey{}, hops)
 	out := r.Clone(context.WithValue(ctx, callerKey{}, caller.Name))
 	out.URL.Path, out.URL.RawPath = "/"+r.PathValue("path"), ""
 	out.Host = s.p.Cfg.ServiceHost(target)

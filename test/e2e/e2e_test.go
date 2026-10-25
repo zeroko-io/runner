@@ -154,7 +154,7 @@ func healthy() bool { return do("GET", apiAddr, "runner", "/healthz", "", nil, n
 func (s *suite) configure() {
 	r := s.api("PATCH", "/api/settings", map[string]any{
 		"domain": domain, "public_scheme": "http",
-		"cpu_seconds": 3, "max_processes": 3,
+		"cpu_seconds": 3, "max_processes": 3, "realtime_connections": 2,
 	})
 	s.check("settings: set, and the runner restarts", r.status == 202, r.text())
 	time.Sleep(time.Second)
@@ -419,6 +419,8 @@ func TestE2E(t *testing.T) {
 		return strings.Contains(r.text(), `"cron":"* * * * *"`)
 	}))
 
+	s.limitChecks()
+
 	// Deleting a service deletes its data.
 	s.check("delete the service", s.api("DELETE", "/api/services/t1", nil).status == 204 && t1("/").status == 404)
 	s.api("POST", "/api/services/t1/deployments", deployment(1))
@@ -574,6 +576,7 @@ func (s *suite) realtimeChecks() {
 	s.check("realtime: WebSocket receives JSON", wsRecv(ws, wr) == `{"hello":"room"}`)
 	s.check("realtime: SSE receives it", line() == "data: {\"hello\":\"room\"}\n")
 	s.check("realtime: who is connected", t1("/live/who").text() == `["ana","bo"]`)
+	s.check("realtime: past the runner's realtime_connections, 503", t1("/live?u=cy").status == 503)
 	r := s.api("POST", "/api/services/t1/realtime/publish", map[string]string{"channel": "user:bo", "data": "just bo"})
 	s.check("realtime: API publish", r.text() == "{\"delivered\":1}\n" && line() == "\n" && line() == "data: just bo\n", r.text())
 }
@@ -583,7 +586,9 @@ func (s *suite) egressChecks() {
 	b := t1("/outbound?u=http://127.0.0.1:8080/").text()
 	s.check("egress: private addresses are blocked", strings.HasPrefix(b, "403 blocked") && strings.Contains(b, "not a public internet address"), b)
 	b = t1("/outbound?u=http://localhost:8080/").text()
-	s.check("egress: names of private addresses are blocked", strings.HasPrefix(b, "502 error") && strings.Contains(b, "not a public internet address"), b)
+	// Blocked as private once resolved, or not resolved at all (as the
+	// network's DNS has it): never reached either way.
+	s.check("egress: names of private addresses are blocked", strings.HasPrefix(b, "502 error") && (strings.Contains(b, "not a public internet address") || strings.Contains(b, "no such host")), b)
 	b = out()
 	s.check("egress: a failed request is a 502 with the cause", strings.HasPrefix(b, "502 error") && strings.Contains(b, "nothing.invalid"), b)
 	r := s.api("PATCH", "/api/services/t1", map[string]any{"egress": []string{"*.example.com"}})
@@ -596,6 +601,108 @@ func (s *suite) egressChecks() {
 	s.check("egress: invalid hosts are refused", s.api("PATCH", "/api/services/t1", map[string]any{"egress": []string{"http://x"}}).status == 400)
 	r = s.api("PATCH", "/api/services/t1", map[string]any{"egress": []string{"*"}})
 	s.check("egress: back to any host", strings.Contains(r.text(), `"egress":["*"]`), r.text())
+}
+
+const limited = `
+import { connect } from "cloudflare:sockets";
+export default {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    if (url.pathname === "/burn") { const end = Date.now() + Number(url.searchParams.get("ms")); while (Date.now() < end) {} return new Response("burnt"); }
+    if (url.pathname === "/cycle") return env.NEXT.fetch("https://next/cycle");
+    if (url.pathname === "/connect") {
+      try {
+        const sock = connect({ hostname: url.searchParams.get("host"), port: 80 });
+        const w = sock.writable.getWriter();
+        await w.write(new TextEncoder().encode("HEAD / HTTP/1.0\r\nHost: " + url.searchParams.get("host") + "\r\n\r\n"));
+        const { value } = await sock.readable.getReader().read();
+        await sock.close();
+        return new Response(new TextDecoder().decode(value).split("\r\n")[0]);
+      } catch (e) { return new Response("failed: " + e.message); }
+    }
+    if (url.pathname === "/ws") {
+      try {
+        const res = await fetch("https://echo.websocket.org/", { headers: { Upgrade: "websocket" } });
+        const ws = res.webSocket;
+        if (!ws) return new Response("no websocket: " + res.status);
+        ws.accept();
+        const got = new Promise((resolve) => ws.addEventListener("message", (e) => { if (String(e.data) === "ping") resolve("echo ping"); }));
+        ws.send("ping");
+        const out = await Promise.race([got, new Promise((r) => setTimeout(() => r("no echo"), 8000))]);
+        ws.close();
+        return new Response(out);
+      } catch (e) { return new Response("failed: " + e.message); }
+    }
+    return new Response("ok");
+  },
+};
+`
+
+// limitChecks: each client's rate, a cycle of services stopped, outbound
+// sockets and WebSockets through the egress proxy, and the CPU a service
+// may use in a minute (last: it restarts the runner).
+func (s *suite) limitChecks() {
+	deploy := func(name string, bindings map[string]string) bool {
+		return s.api("POST", "/api/services/"+name+"/deployments", map[string]any{"files": map[string]string{"index.js": limited}, "bindings": bindings}).status == 201
+	}
+	s.check("limits: deploy", deploy("lim", nil) && deploy("cyc1", map[string]string{"NEXT": "service:cyc2"}) && deploy("cyc2", map[string]string{"NEXT": "service:cyc1"}))
+
+	// Each client at its rate: 2 a second, a burst of 4.
+	r := s.api("PATCH", "/api/services/lim", map[string]any{"rate_limit": 2})
+	s.check("rate limit: set on a service", r.status == 200 && strings.Contains(r.text(), `"rate_limit":2`), r.text())
+	limited, retry := 0, ""
+	for range 10 {
+		r := gw("lim", "GET", "/", nil, nil)
+		if r.status == 429 {
+			limited++
+			retry = r.header.Get("Retry-After")
+		}
+	}
+	s.check("rate limit: past it, 429 with Retry-After", limited >= 5 && retry == "1", limited, retry)
+	other := gw("lim", "GET", "/", nil, map[string]string{"X-Forwarded-For": "203.0.113.9"})
+	s.check("rate limit: per client", other.status == 200, other.status)
+	s.api("PATCH", "/api/services/lim", map[string]any{"rate_limit": 0})
+	time.Sleep(1100 * time.Millisecond)
+	s.check("rate limit: 0 is the runner's, none here", gw("lim", "GET", "/", nil, nil).status == 200)
+
+	// Services that call each other in a cycle are stopped.
+	c := gw("cyc1", "GET", "/cycle", nil, nil)
+	s.check("bindings: a cycle of services is stopped with 508", c.status == 508, c.status, c.text())
+
+	// Outbound sockets and WebSockets go through the egress proxy, held to
+	// the hosts the service may reach.
+	b := gw("lim", "GET", "/connect?host=example.com", nil, nil).text()
+	if strings.Contains(b, "failed") && !strings.Contains(b, "blocked") {
+		s.t.Logf("skip egress connect(): no internet here? %s", b)
+	} else {
+		s.check("egress: connect() reaches a public host", strings.HasPrefix(b, "HTTP/1."), b)
+		s.api("PATCH", "/api/services/lim", map[string]any{"egress": []string{"example.org"}})
+		b = gw("lim", "GET", "/connect?host=example.com", nil, nil).text()
+		s.check("egress: connect() to another host is refused", strings.HasPrefix(b, "failed"), b)
+		s.api("PATCH", "/api/services/lim", map[string]any{"egress": []string{"*"}})
+		w := gw("lim", "GET", "/ws", nil, nil).text()
+		s.check("egress: an outbound WebSocket", w == "echo ping", w)
+	}
+
+	// The CPU a service may use in a minute: 4 s here. Past it, it waits.
+	r = s.api("PATCH", "/api/settings", map[string]any{"cpu_seconds_per_minute": 4})
+	s.check("cpu: set cpu_seconds_per_minute", r.status == 202, r.text())
+	time.Sleep(time.Second)
+	waitFor(30*time.Second, 250*time.Millisecond, healthy)
+	for range 3 {
+		gw("lim", "GET", "/burn?ms=1500", nil, nil)
+		time.Sleep(1200 * time.Millisecond)
+	}
+	go gw("lim", "GET", "/burn?ms=1500", nil, nil) // it may wait a minute
+	s.check("cpu: past a minute's CPU, a service waits, and says so", waitFor(10*time.Second, 500*time.Millisecond, func() bool {
+		return strings.Contains(s.api("GET", "/api/services/lim/logs?limit=50", nil).text(), "more than the 4s it may")
+	}))
+	for _, n := range []string{"lim", "cyc1", "cyc2"} {
+		s.api("DELETE", "/api/services/"+n, nil)
+	}
+	s.api("PATCH", "/api/settings", map[string]any{"cpu_seconds_per_minute": 30})
+	time.Sleep(time.Second)
+	waitFor(30*time.Second, 250*time.Millisecond, healthy)
 }
 
 // mcpChecks: the API as an MCP server, at /mcp with the same token.

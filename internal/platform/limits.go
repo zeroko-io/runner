@@ -19,7 +19,7 @@ const (
 // SetLimits sets which hosts a service may reach and how much it may store.
 // Hosts are patterns: "*" (any), "example.com", "*.example.com"; none
 // disables outbound requests. diskMB 0 is the instance's default.
-func (p *Platform) SetLimits(ctx context.Context, service *store.Service, hosts []string, diskMB int) error {
+func (p *Platform) SetLimits(ctx context.Context, service *store.Service, hosts []string, diskMB, rateLimit int) error {
 	allow := []string{}
 	for _, h := range hosts {
 		h = strings.ToLower(strings.TrimSpace(h))
@@ -39,14 +39,17 @@ func (p *Platform) SetLimits(ctx context.Context, service *store.Service, hosts 
 	if diskMB < 0 || diskMB > maxDiskMB {
 		return Invalid("disk_mb is 0 (the default) to 1048576")
 	}
-	if err := p.Store.SetServiceLimits(ctx, service.ID, allow, diskMB); err != nil {
+	if rateLimit < -1 || rateLimit > 1000000 {
+		return Invalid("rate_limit is -1 (none), 0 (the runner's) or 1 to 1000000 requests a second")
+	}
+	if err := p.Store.SetServiceLimits(ctx, service.ID, allow, diskMB, rateLimit); err != nil {
 		return err
 	}
 	p.quotas.Delete(service.ID)
 	if !slices.Equal(allow, service.Egress) {
 		p.RT.Stop(service.ID, "egress changed")
 	}
-	service.Egress, service.DiskMB = allow, diskMB
+	service.Egress, service.DiskMB, service.RateLimit = allow, diskMB, rateLimit
 	return nil
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/zeroko-io/runner/internal/config"
 	"github.com/zeroko-io/runner/internal/data"
 	"github.com/zeroko-io/runner/internal/deploy"
+	"github.com/zeroko-io/runner/internal/egress"
 	"github.com/zeroko-io/runner/internal/realtime"
 	"github.com/zeroko-io/runner/internal/runtime"
 	"github.com/zeroko-io/runner/internal/store"
@@ -115,16 +116,17 @@ func New(cfg *config.Settings, st *store.Store, log *slog.Logger) (*Platform, er
 	p.Hub = realtime.NewHub(p.deliverEvent)
 	p.Data.Quota = p.quota
 	p.RT, err = runtime.New(runtime.Options{
-		WorkerdBin:  config.Workerd,
-		Dir:         filepath.Join(config.DataDir, "run"),
-		ControlSock: p.ControlSock(),
-		EgressSock:  p.EgressSock(),
-		HeapMB:      cfg.HeapMB,
-		CPUSeconds:  cfg.CPUSeconds,
-		IdleSeconds: cfg.IdleSeconds,
-		MaxProcs:    cfg.MaxProcesses,
-		Load:        p.load,
-		Logs:        p.addLogs,
+		WorkerdBin:   config.Workerd,
+		Dir:          filepath.Join(config.DataDir, "run"),
+		ControlSock:  p.ControlSock(),
+		Egress:       egress.New(p.EgressService, p.Outbound),
+		HeapMB:       cfg.HeapMB,
+		CPUSeconds:   cfg.CPUSeconds,
+		CPUPerMinute: cfg.CPUPerMinute,
+		IdleSeconds:  cfg.IdleSeconds,
+		MaxProcs:     cfg.MaxProcesses,
+		Load:         p.load,
+		Logs:         p.addLogs,
 	})
 	if err != nil {
 		return nil, err
@@ -134,9 +136,6 @@ func New(cfg *config.Settings, st *store.Store, log *slog.Logger) (*Platform, er
 
 // ControlSock is where the bindings in service processes reach the runner.
 func (p *Platform) ControlSock() string { return filepath.Join(config.DataDir, "run-control.sock") }
-
-// EgressSock is where service processes send their outbound requests.
-func (p *Platform) EgressSock() string { return filepath.Join(config.DataDir, "run-egress.sock") }
 
 // Start loads the crons of every service and runs the job and cron workers
 // until ctx ends.

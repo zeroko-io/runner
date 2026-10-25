@@ -26,9 +26,17 @@ type Settings struct {
 	Separator    string `json:"separator"`     // "." (<name>.<domain>) or "--" (<name>--<domain>)
 	PublicScheme string `json:"public_scheme"` // http or https, as clients see services
 
-	MaxBodyMB    int  `json:"max_body_mb"`   // a request body to a service
-	HeapMB       int  `json:"heap_mb"`       // V8 heap limit per service process
-	CPUSeconds   int  `json:"cpu_seconds"`   // continuous CPU a service process may burn before it is restarted
+	MaxBodyMB  int `json:"max_body_mb"` // a request body to a service
+	HeapMB     int `json:"heap_mb"`     // V8 heap limit per service process
+	CPUSeconds int `json:"cpu_seconds"` // continuous CPU a service process may burn before it is restarted
+	// CPU a service process may use in any minute, in seconds: past it, it
+	// waits until the minute fits. 0 for no limit.
+	CPUPerMinute int `json:"cpu_seconds_per_minute"`
+	// Realtime connections a service holds at once.
+	RealtimeConnections int `json:"realtime_connections"`
+	// Requests a second each client (by address) may make to a service,
+	// unless the service has its own; past it, 429. 0 for no limit.
+	RateLimit    int  `json:"rate_limit"`
 	IdleSeconds  int  `json:"idle_seconds"`  // a service process with no work for this long is stopped
 	MaxProcesses int  `json:"max_processes"` // service processes running at once
 	DiskMB       int  `json:"disk_mb"`       // a service's disk quota unless it has its own
@@ -38,15 +46,17 @@ type Settings struct {
 // Defaults are the settings of a new runner.
 func Defaults() Settings {
 	return Settings{
-		Separator:    ".",
-		PublicScheme: "https",
-		MaxBodyMB:    100,
-		HeapMB:       128,
-		CPUSeconds:   30,
-		IdleSeconds:  600,
-		MaxProcesses: 50,
-		DiskMB:       5120,
-		Egress:       true,
+		Separator:           ".",
+		PublicScheme:        "https",
+		MaxBodyMB:           100,
+		HeapMB:              128,
+		CPUSeconds:          30,
+		CPUPerMinute:        30,
+		RealtimeConnections: 1000,
+		IdleSeconds:         600,
+		MaxProcesses:        50,
+		DiskMB:              5120,
+		Egress:              true,
 	}
 }
 
@@ -74,6 +84,9 @@ func (s *Settings) Validate() error {
 		{"max_body_mb", s.MaxBodyMB, 1, 10240},
 		{"heap_mb", s.HeapMB, 16, 8192},
 		{"cpu_seconds", s.CPUSeconds, 1, 3600},
+		{"cpu_seconds_per_minute", s.CPUPerMinute, 0, 6000},
+		{"realtime_connections", s.RealtimeConnections, 1, 1000000},
+		{"rate_limit", s.RateLimit, 0, 1000000},
 		{"idle_seconds", s.IdleSeconds, 10, 86400},
 		{"max_processes", s.MaxProcesses, 1, 10000},
 		{"disk_mb", s.DiskMB, 1, 1 << 30},

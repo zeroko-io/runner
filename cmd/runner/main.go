@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/zeroko-io/runner/internal/config"
-	"github.com/zeroko-io/runner/internal/egress"
 	"github.com/zeroko-io/runner/internal/platform"
 	"github.com/zeroko-io/runner/internal/server"
 	"github.com/zeroko-io/runner/internal/store"
@@ -100,15 +99,6 @@ func run(log *slog.Logger, lines *platform.Lines) error {
 	controlSrv := &http.Server{Handler: srv.Control(), ReadHeaderTimeout: 10 * time.Second}
 	go controlSrv.Serve(ctl)
 	defer controlSrv.Close()
-
-	os.Remove(p.EgressSock())
-	out, err := net.Listen("unix", p.EgressSock())
-	if err != nil {
-		return err
-	}
-	egressSrv := &http.Server{Handler: egress.New(p.EgressService, p.Outbound), ReadHeaderTimeout: 10 * time.Second}
-	go egressSrv.Serve(out)
-	defer egressSrv.Close()
 
 	if err := p.Start(ctx); err != nil {
 		return err

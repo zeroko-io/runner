@@ -106,6 +106,9 @@ var migrations = []string{
 		last_used_at INTEGER NOT NULL DEFAULT 0,
 		expires_at INTEGER NOT NULL DEFAULT 0
 	);`,
+	// A service's own rate limit, requests a second per client: 0 for the
+	// runner's, -1 for none.
+	`ALTER TABLE services ADD COLUMN rate_limit INTEGER NOT NULL DEFAULT 0`,
 }
 
 func Open(path string) (*Store, error) {
