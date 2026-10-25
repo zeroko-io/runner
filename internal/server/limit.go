@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -53,13 +54,18 @@ func (l *limiter) allow(key string, rate int) bool {
 }
 
 // client is who sends a request, for its rate: the address the proxy in
-// front saw (the last of X-Forwarded-For), or the connection's.
+// front saw (the last of X-Forwarded-For) when the request comes from a
+// proxy of one's own, at a private or loopback address; the connection's
+// otherwise, which a client can't make up.
 func client(r *http.Request) string {
+	ip := clientIP(r)
 	if f := r.Header.Get("X-Forwarded-For"); f != "" {
-		parts := strings.Split(f, ",")
-		return strings.TrimSpace(parts[len(parts)-1])
+		if a, err := netip.ParseAddr(ip); err == nil && (a.Unmap().IsPrivate() || a.Unmap().IsLoopback()) {
+			parts := strings.Split(f, ",")
+			return strings.TrimSpace(parts[len(parts)-1])
+		}
 	}
-	return clientIP(r)
+	return ip
 }
 
 // maxHops is how many service bindings a request may go through, one

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A client, for rate limits, is the last of `X-Forwarded-For` only when
+  the request comes from a private or loopback address (a proxy in front);
+  otherwise the connection's, which a client can't make up.
 - Outbound sockets from `connect()` work: each service process has an
   egress socket of its own, which says whose its requests are (workerd
   doesn't add the process's token to a socket's CONNECT). Plain TCP only:
