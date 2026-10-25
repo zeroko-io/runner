@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - `PATCH /api/services/<name>` takes `name` too: it renames the service,
   its address. Its data, versions and logs stay; it answers at the new
