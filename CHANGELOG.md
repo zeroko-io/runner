@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- The API as an MCP server (the Model Context Protocol), at `POST /mcp`
+  with the same tokens: tools to list, deploy, inspect, roll back, stop,
+  start and delete services, read their logs and metrics, set secrets and
+  vars, query their databases, list their files and run their crons. Each
+  tool is an API call made as the caller, logged as any other.
+  Streamable HTTP, answered as JSON.
+
 ## 0.2.0
 
 - `PATCH /api/services/<name>` takes `name` too: it renames the service,

@@ -51,7 +51,7 @@ func (s *Server) Gateway() http.Handler {
 	})
 }
 
-// API serves the API and /healthz, at any host.
+// API serves the API, its MCP server at /mcp, and /healthz, at any host.
 func (s *Server) API() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -59,6 +59,8 @@ func (s *Server) API() http.Handler {
 			w.Write([]byte("ok\n"))
 		case strings.HasPrefix(r.URL.Path, "/api/"):
 			s.api.ServeHTTP(w, r)
+		case r.URL.Path == "/mcp":
+			s.authed(s.mcp)(w, r)
 		default:
 			writeError(w, http.StatusNotFound, "not_found", "The API is at /api.")
 		}

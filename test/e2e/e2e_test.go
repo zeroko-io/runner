@@ -357,6 +357,7 @@ func TestE2E(t *testing.T) {
 	}
 
 	s.egressChecks()
+	s.mcpChecks()
 	s.check("a thrown error is a 500", t1("/throw").status == 500)
 	t1("/log?m=marker1")
 
@@ -595,6 +596,49 @@ func (s *suite) egressChecks() {
 	s.check("egress: invalid hosts are refused", s.api("PATCH", "/api/services/t1", map[string]any{"egress": []string{"http://x"}}).status == 400)
 	r = s.api("PATCH", "/api/services/t1", map[string]any{"egress": []string{"*"}})
 	s.check("egress: back to any host", strings.Contains(r.text(), `"egress":["*"]`), r.text())
+}
+
+// mcpChecks: the API as an MCP server, at /mcp with the same token.
+func (s *suite) mcpChecks() {
+	rpc := func(id int, method string, params any) map[string]any {
+		r := s.api("POST", "/mcp", map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+		return r.obj()
+	}
+	init := rpc(1, "initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "e2e", "version": "1"}})
+	res, _ := init["result"].(map[string]any)
+	s.check("mcp: initialize", res["protocolVersion"] == "2025-06-18" && res["instructions"] != nil, init)
+	n := s.api("POST", "/mcp", map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
+	s.check("mcp: a notification gets 202", n.status == 202, n.status)
+	list := rpc(2, "tools/list", map[string]any{})
+	tools, _ := list["result"].(map[string]any)["tools"].([]any)
+	names := map[string]bool{}
+	for _, t := range tools {
+		names[t.(map[string]any)["name"].(string)] = true
+	}
+	s.check("mcp: tools", len(tools) > 10 && names["deploy"] && names["get_logs"] && names["query_db"], len(tools))
+	call := func(id int, tool string, args map[string]any) (string, bool) {
+		out := rpc(id, "tools/call", map[string]any{"name": tool, "arguments": args})
+		r, _ := out["result"].(map[string]any)
+		content, _ := r["content"].([]any)
+		text := ""
+		if len(content) > 0 {
+			text, _ = content[0].(map[string]any)["text"].(string)
+		}
+		isErr, _ := r["isError"].(bool)
+		return text, isErr
+	}
+	text, isErr := call(3, "deploy", map[string]any{"name": "mcp1", "files": map[string]any{"index.js": "export default { fetch: () => new Response('from mcp') }"}})
+	s.check("mcp: deploy", !isErr && strings.Contains(text, `"status":"ready"`), text)
+	s.check("mcp: the deployed service answers", gw("mcp1", "GET", "/", nil, nil).text() == "from mcp")
+	text, isErr = call(4, "list_services", nil)
+	s.check("mcp: list_services", !isErr && strings.Contains(text, `"mcp1"`), text)
+	text, isErr = call(5, "get_service", map[string]any{"name": "nope"})
+	s.check("mcp: an API error is the tool's", isErr && strings.Contains(text, "not_found"), text)
+	text, isErr = call(6, "delete_service", map[string]any{"name": "mcp1"})
+	s.check("mcp: delete_service", !isErr, text)
+	bad := rpc(7, "tools/call", map[string]any{"name": "nothing"})
+	s.check("mcp: an unknown tool", bad["error"] != nil, bad)
+	s.check("mcp: no token, no MCP", do("POST", apiAddr, "runner", "/mcp", "", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "ping"}, nil).status == 401)
 }
 
 func (s *suite) logChecks() {
