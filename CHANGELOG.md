@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2
 
 - The reads on every request (a service, its deployments, a token, logs)
   have connections of their own to `runner.db`: they no longer wait behind
