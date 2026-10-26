@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 - WebSocket control frames (ping, pong, close) are at most 125 bytes and
   never fragmented, as RFC 6455 says: others close the connection (1002).
