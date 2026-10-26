@@ -10,8 +10,8 @@ name: ci
 # pushes its commit and its tag together (git push --atomic origin main
 # vX.Y.Z), and the image built for that commit is X.Y.Z.
 #
-# Changes to the README or the changelog only run nothing. Path filters do
-# not apply to tags.
+# Changes to docs only run nothing; a release's commit, the changelog's
+# alone, runs, as its tag needs its image. Path filters do not apply to tags.
 on:
   push:
     branches: [main]
@@ -19,6 +19,7 @@ on:
     paths: &code
       - "**"
       - "!**.md"
+      - "CHANGELOG.md"
       - "!LICENSE"
       - "!docker-compose.yml"
   pull_request:
