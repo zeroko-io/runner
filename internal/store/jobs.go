@@ -122,6 +122,20 @@ func (s *Store) RequeueDead(ctx context.Context, serviceID string, id int64) (bo
 	return n > 0, nil
 }
 
+// JobCount is how many jobs a service has, queued, running or dead.
+func (s *Store) JobCount(ctx context.Context, serviceID string) (int, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE service_id = ?`, serviceID).Scan(&n)
+	return n, err
+}
+
+// PruneDeadJobs deletes the jobs dead since before: a cron's since
+// beforeCron, as its next run is its retry.
+func (s *Store) PruneDeadJobs(ctx context.Context, before, beforeCron int64) error {
+	_, err := s.DB.ExecContext(ctx, `DELETE FROM jobs WHERE status = 'dead' AND updated_at < CASE WHEN cron != '' THEN ? ELSE ? END`, beforeCron, before)
+	return err
+}
+
 // ResetRunning queues again the jobs that were running when the runner stopped.
 func (s *Store) ResetRunning(ctx context.Context) error {
 	_, err := s.DB.ExecContext(ctx, `UPDATE jobs SET status = 'queued' WHERE status = 'running'`)

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- WebSocket control frames (ping, pong, close) are at most 125 bytes and
+  never fragmented, as RFC 6455 says: others close the connection (1002).
+- Pruning logs runs as a short statement per service, so requests don't
+  wait behind one over every service's logs.
+- A service holds up to 10,000 jobs, queued and dead: past it, sending one
+  answers 400. Dead jobs are deleted after 7 days, a cron's after 1 day.
+- A token's `last_used_at` is to the minute: the API no longer writes to
+  `runner.db` on every request.
+
 ## 0.3.0
 
 - A client, for rate limits, is the last of `X-Forwarded-For` only when

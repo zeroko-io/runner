@@ -92,6 +92,9 @@ type Data struct {
 	mu    sync.Mutex
 	dbs   map[string]*sql.DB    // path -> database
 	files map[string]*fileStore // directory -> store
+	// Held while an upload's size is checked against the quota and counted,
+	// so that uploads at once can't all take the same room.
+	quotaMu sync.Mutex
 }
 
 func New(dir string) (*Data, error) {

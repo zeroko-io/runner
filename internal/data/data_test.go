@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -175,5 +176,28 @@ func TestQuota(t *testing.T) {
 	}
 	if _, err := d.Batch(ctx, "service", "DB", []Statement{stmt("INSERT INTO t VALUES (zeroblob(400000))")}); err != nil {
 		t.Fatalf("after freeing room: %v", err)
+	}
+}
+
+// Uploads at once share the quota: they can't each take the room left.
+func TestQuotaUploadsAtOnce(t *testing.T) {
+	d, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	d.Quota = func(string) int64 { return 1000 }
+	errs := make(chan error, 10)
+	for i := range 10 {
+		go func() {
+			_, err := d.PutFile(context.Background(), "s", "F", fmt.Sprint(i), "", strings.NewReader(strings.Repeat("x", 400)))
+			errs <- err
+		}()
+	}
+	for range 10 {
+		<-errs
+	}
+	if u := d.Usage("s"); u > 1000 {
+		t.Fatalf("usage %d past the quota of 1000", u)
 	}
 }

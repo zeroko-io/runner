@@ -148,6 +148,12 @@ func (c *wsConn) readFrame() (fin bool, op byte, payload []byte, err error) {
 		c.close(1009)
 		return false, 0, nil, errTooLarge
 	}
+	// Control frames are whole and short (RFC 6455, 5.5): a ping's payload
+	// comes back in its pong.
+	if op >= opClose && (n > 125 || !fin) {
+		c.close(1002)
+		return false, 0, nil, errors.New("control frames are at most 125 bytes, unfragmented")
+	}
 	var mask [4]byte
 	if _, err = io.ReadFull(c.br, mask[:]); err != nil {
 		return

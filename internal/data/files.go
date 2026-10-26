@@ -129,6 +129,25 @@ func (d *Data) PutFile(ctx context.Context, serviceID, binding, key, typ string,
 	if typ == "" {
 		typ = "application/octet-stream"
 	}
+	// Uploads at once each saw the same room: check again with its size, and
+	// count it before anyone else checks.
+	d.quotaMu.Lock()
+	if q := d.quota(serviceID); q > 0 {
+		var replaced int64
+		fs.db.QueryRowContext(ctx, `SELECT size FROM files WHERE key = ?`, key).Scan(&replaced)
+		if n > q-d.Usage(serviceID)+replaced {
+			d.quotaMu.Unlock()
+			return nil, d.quotaFull(serviceID)
+		}
+	}
+	fs.bytes.Add(n)
+	d.quotaMu.Unlock()
+	stored := false
+	defer func() {
+		if !stored {
+			fs.bytes.Add(-n)
+		}
+	}()
 	sum := hex.EncodeToString(h.Sum(nil))
 	f := &File{Key: key, Size: n, Type: typ, ETag: `"` + sum[:32] + `"`, Uploaded: time.Now().UnixMilli(), blob: randomName()}
 	if err := os.Rename(tmp.Name(), filepath.Join(fs.dir, "blobs", f.blob)); err != nil {
@@ -152,7 +171,8 @@ func (d *Data) PutFile(ctx context.Context, serviceID, binding, key, typ string,
 		os.Remove(filepath.Join(fs.dir, "blobs", f.blob))
 		return nil, err
 	}
-	fs.bytes.Add(f.Size - oldSize)
+	stored = true
+	fs.bytes.Add(-oldSize)
 	if old != "" {
 		os.Remove(filepath.Join(fs.dir, "blobs", old))
 	}

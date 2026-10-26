@@ -670,7 +670,7 @@ func (p *Platform) Logs(ctx context.Context, serviceID string, after int64, limi
 	}
 }
 
-// maintain prunes logs every few minutes.
+// maintain prunes logs, metrics and dead jobs every few minutes.
 func (p *Platform) maintain(ctx context.Context) {
 	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
@@ -679,6 +679,9 @@ func (p *Platform) maintain(ctx context.Context) {
 			p.Log.Warn("prune logs", "err", err)
 		}
 		p.Store.PruneMetrics(ctx, time.Now().Add(-metricsRetention).Unix()/60)
+		if err := p.Store.PruneDeadJobs(ctx, time.Now().Add(-deadRetention).UnixMilli(), time.Now().Add(-deadCronRetention).UnixMilli()); err != nil && ctx.Err() == nil {
+			p.Log.Warn("prune jobs", "err", err)
+		}
 		select {
 		case <-ctx.Done():
 			return

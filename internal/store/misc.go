@@ -106,9 +106,14 @@ func (s *Store) AddLogs(ctx context.Context, serviceID string, logs []Log) error
 		return err
 	}
 	defer tx.Rollback()
+	// Parsed once for the batch, which holds up to thousands.
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO logs (service_id, deployment_id, ts, source, level, message) VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
 	for _, l := range logs {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO logs (service_id, deployment_id, ts, source, level, message) VALUES (?, ?, ?, ?, ?, ?)`,
-			serviceID, l.Deployment, l.TS, l.Source, l.Level, l.Message); err != nil {
+		if _, err := stmt.ExecContext(ctx, serviceID, l.Deployment, l.TS, l.Source, l.Level, l.Message); err != nil {
 			return err
 		}
 	}
@@ -141,11 +146,33 @@ func (s *Store) Logs(ctx context.Context, serviceID string, after int64, limit i
 }
 
 // PruneLogs keeps the newest keep entries of each service and none older than
-// minTS.
+// minTS: a short statement per service, on its index, as requests wait for
+// runner.db's one connection meanwhile.
 func (s *Store) PruneLogs(ctx context.Context, keep int, minTS int64) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM logs WHERE ts < ? OR id IN (
-		SELECT id FROM (SELECT id, row_number() OVER (PARTITION BY service_id ORDER BY id DESC) AS n FROM logs) WHERE n > ?)`, minTS, keep)
-	return err
+	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT service_id FROM logs`)
+	if err != nil {
+		return err
+	}
+	var services []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		services = append(services, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range services {
+		if _, err := s.DB.ExecContext(ctx, `DELETE FROM logs WHERE service_id = ? AND (ts < ? OR id <= (
+			SELECT id FROM logs WHERE service_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?))`, id, minTS, id, keep); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Settings: one row, the JSON of config.Settings.
@@ -218,11 +245,20 @@ func (s *Store) DeleteToken(ctx context.Context, id string) (bool, error) {
 }
 
 // UseToken returns the name of the token with this hash, if it exists and
-// has not expired, and records its use; ok is false otherwise.
+// has not expired, and records its use, to the minute: a write per request
+// would queue behind every other on runner.db. ok is false otherwise.
 func (s *Store) UseToken(ctx context.Context, hash string) (name string, ok bool, err error) {
-	err = s.DB.QueryRowContext(ctx, `UPDATE tokens SET last_used_at = ? WHERE hash = ? AND (expires_at = 0 OR expires_at > ?) RETURNING name`, now(), hash, now()).Scan(&name)
+	t := now()
+	var last int64
+	err = s.DB.QueryRowContext(ctx, `SELECT name, last_used_at FROM tokens WHERE hash = ? AND (expires_at = 0 OR expires_at > ?)`, hash, t).Scan(&name, &last)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if t-last >= 60_000 {
+		_, err = s.DB.ExecContext(ctx, `UPDATE tokens SET last_used_at = ? WHERE hash = ?`, t, hash)
 	}
 	return name, err == nil, err
 }

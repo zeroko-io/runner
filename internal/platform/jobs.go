@@ -20,6 +20,12 @@ const (
 	maxJobKey       = 256
 	jobTimeout      = 15 * time.Minute
 	jobsPerService  = 4
+	// The jobs a service keeps at most, queued, running and dead: they're in
+	// runner.db, outside its disk quota. Jobs sent at once may pass it by a few.
+	maxJobs = 10_000
+	// How long dead jobs are kept, for a look and a retry: a cron's, less.
+	deadRetention     = 7 * 24 * time.Hour
+	deadCronRetention = 24 * time.Hour
 )
 
 // SendJob queues a job for a service's job() handler and reports true. With
@@ -45,6 +51,11 @@ func (p *Platform) SendJob(ctx context.Context, serviceID string, payload json.R
 	}
 	if len(key) > maxJobKey {
 		return nil, false, Invalid("job keys are at most 256 bytes")
+	}
+	if n, err := p.Store.JobCount(ctx, serviceID); err != nil {
+		return nil, false, err
+	} else if n >= maxJobs {
+		return nil, false, Invalid("the service has 10000 jobs, queued and dead: delete some, or let them run")
 	}
 	j := &store.Job{ServiceID: serviceID, Payload: string(payload), Key: key, MaxAttempts: attempts, RunAt: time.Now().Add(delay).UnixMilli()}
 	queued, err := p.Store.Enqueue(ctx, j)
