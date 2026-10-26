@@ -126,9 +126,9 @@ func (s *Store) Logs(ctx context.Context, serviceID string, after int64, limit i
 	var rows *sql.Rows
 	var err error
 	if after > 0 {
-		rows, err = s.DB.QueryContext(ctx, `SELECT id, deployment_id, ts, source, level, message FROM logs WHERE service_id = ? AND id > ? ORDER BY id LIMIT ?`, serviceID, after, limit)
+		rows, err = s.read.QueryContext(ctx, `SELECT id, deployment_id, ts, source, level, message FROM logs WHERE service_id = ? AND id > ? ORDER BY id LIMIT ?`, serviceID, after, limit)
 	} else {
-		rows, err = s.DB.QueryContext(ctx, `SELECT * FROM (SELECT id, deployment_id, ts, source, level, message FROM logs WHERE service_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id`, serviceID, limit)
+		rows, err = s.read.QueryContext(ctx, `SELECT * FROM (SELECT id, deployment_id, ts, source, level, message FROM logs WHERE service_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id`, serviceID, limit)
 	}
 	if err != nil {
 		return nil, err
@@ -250,7 +250,7 @@ func (s *Store) DeleteToken(ctx context.Context, id string) (bool, error) {
 func (s *Store) UseToken(ctx context.Context, hash string) (name string, ok bool, err error) {
 	t := now()
 	var last int64
-	err = s.DB.QueryRowContext(ctx, `SELECT name, last_used_at FROM tokens WHERE hash = ? AND (expires_at = 0 OR expires_at > ?)`, hash, t).Scan(&name, &last)
+	err = s.read.QueryRowContext(ctx, `SELECT name, last_used_at FROM tokens WHERE hash = ? AND (expires_at = 0 OR expires_at > ?)`, hash, t).Scan(&name, &last)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}

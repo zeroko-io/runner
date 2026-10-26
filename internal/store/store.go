@@ -17,7 +17,13 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
-type Store struct{ DB *sql.DB }
+type Store struct {
+	DB *sql.DB
+	// Reads on every request (services, deployments, tokens, logs) on
+	// connections of their own: WAL lets them run while DB writes, instead
+	// of waiting for its one connection behind a batch of logs.
+	read *sql.DB
+}
 
 // migrations are append-only: never edit one that has been released.
 var migrations = []string{
@@ -123,10 +129,18 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if s.read, err = sql.Open("sqlite3", "file:"+path+"?mode=ro&_busy_timeout=10000"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	s.read.SetMaxOpenConns(4)
 	return s, nil
 }
 
-func (s *Store) Close() error { return s.DB.Close() }
+func (s *Store) Close() error {
+	s.read.Close()
+	return s.DB.Close()
+}
 
 func (s *Store) migrate() error {
 	if _, err := s.DB.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {

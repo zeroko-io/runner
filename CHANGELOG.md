@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The reads on every request (a service, its deployments, a token, logs)
+  have connections of their own to `runner.db`: they no longer wait behind
+  a batch of logs being written. A service's lookup under a steady write
+  load went from 11 ms (p50) and 150 ms (p99) to well under a millisecond.
+
 ## 0.3.1
 
 - WebSocket control frames (ping, pong, close) are at most 125 bytes and

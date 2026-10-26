@@ -67,15 +67,15 @@ func (s *Store) CreateService(ctx context.Context, name string) (*Service, error
 }
 
 func (s *Store) Service(ctx context.Context, name string) (*Service, error) {
-	return scanService(s.DB.QueryRowContext(ctx, `SELECT `+serviceCols+` FROM services WHERE name = ?`, name))
+	return scanService(s.read.QueryRowContext(ctx, `SELECT `+serviceCols+` FROM services WHERE name = ?`, name))
 }
 
 func (s *Store) ServiceByID(ctx context.Context, id string) (*Service, error) {
-	return scanService(s.DB.QueryRowContext(ctx, `SELECT `+serviceCols+` FROM services WHERE id = ?`, id))
+	return scanService(s.read.QueryRowContext(ctx, `SELECT `+serviceCols+` FROM services WHERE id = ?`, id))
 }
 
 func (s *Store) Services(ctx context.Context) ([]*Service, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+serviceCols+` FROM services ORDER BY name`)
+	rows, err := s.read.QueryContext(ctx, `SELECT `+serviceCols+` FROM services ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -151,11 +151,11 @@ func scanDeployment(row interface{ Scan(...any) error }) (*Deployment, error) {
 }
 
 func (s *Store) Deployment(ctx context.Context, serviceID, id string) (*Deployment, error) {
-	return scanDeployment(s.DB.QueryRowContext(ctx, `SELECT `+deploymentCols+` FROM deployments WHERE service_id = ? AND id = ?`, serviceID, id))
+	return scanDeployment(s.read.QueryRowContext(ctx, `SELECT `+deploymentCols+` FROM deployments WHERE service_id = ? AND id = ?`, serviceID, id))
 }
 
 func (s *Store) Deployments(ctx context.Context, serviceID string, limit int) ([]*Deployment, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+deploymentCols+` FROM deployments WHERE service_id = ? ORDER BY number DESC LIMIT ?`, serviceID, limit)
+	rows, err := s.read.QueryContext(ctx, `SELECT `+deploymentCols+` FROM deployments WHERE service_id = ? ORDER BY number DESC LIMIT ?`, serviceID, limit)
 	if err != nil {
 		return nil, err
 	}
